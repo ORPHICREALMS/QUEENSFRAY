@@ -1,12 +1,12 @@
 // THE QUEEN'S FRAY — game server.
 // Hands out the game page (the newest QUEENSFRAY_v*.html sitting next to this file) and runs every friend match.
 // The battle rules are read straight out of that page, so updating the game = uploading the new html file only.
-const http=require('http'),fs=require('fs'),path=require('path'),vm=require('vm'),crypto=require('crypto'),{WebSocketServer}=require('ws');
+const http=require('http'),fs=require('fs'),path=require('path'),vm=require('vm'),crypto=require('crypto'),zlib=require('zlib'),{WebSocketServer}=require('ws');
 const PORT=process.env.PORT||3000;
 
 function newestPage(){const f=fs.readdirSync(__dirname).filter(n=>/^QUEENSFRAY_v\d+\.html$/i.test(n)).sort((a,b)=>+a.match(/\d+/)[0]-+b.match(/\d+/)[0]);if(!f.length)throw new Error('Put a QUEENSFRAY_vNN.html file next to server.js');return path.join(__dirname,f[f.length-1])}
-let PAGE='',PAGEF='',SIMCODE='',SIMSCRIPT=null;
-function loadPage(){const f=newestPage();const st=fs.statSync(f).mtimeMs+'|'+f;if(st==PAGEF)return;PAGEF=st;PAGE=fs.readFileSync(f);
+let PAGE='',PAGEZ=null,ETAG='',PAGEF='',SIMCODE='',SIMSCRIPT=null;
+function loadPage(){const f=newestPage();const st=fs.statSync(f).mtimeMs+'|'+f;if(st==PAGEF)return;PAGEF=st;PAGE=fs.readFileSync(f);PAGEZ=zlib.gzipSync(PAGE,{level:9});ETAG='"'+crypto.createHash('md5').update(PAGE).digest('hex').slice(0,16)+'"';
  const s=PAGE.toString('utf8'),a=s.indexOf('/*SIM>*/'),b=s.indexOf('/*<SIM*/');if(a<0||b<0)throw new Error('The game page is missing its battle rules');
  SIMCODE=s.slice(a,b).replace(/^const /gm,'var ').replace(/^let /gm,'var ')+'\n;({newGame,step,truceStep,cmd,sees,hidden,mobile,E,summary,getG:()=>G})';SIMSCRIPT=new vm.Script(SIMCODE,{filename:'battle.js'});console.log('game page:',path.basename(f))}
 loadPage();
@@ -15,7 +15,10 @@ function newSim(){const ctx=vm.createContext({console,Math,JSON,Date,Object,Arra
 const server=http.createServer((req,res)=>{
  if(req.url=='/health'){res.writeHead(200);res.end('ok');return}
  try{loadPage()}catch(e){res.writeHead(500);res.end(String(e.message));return}
- res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-cache'});res.end(PAGE)});
+ // the page is sent squeezed (much quicker to download), and a browser that already has this exact version is told to reuse its copy
+ if(req.headers['if-none-match']==ETAG){res.writeHead(304,{ETag:ETAG,'Cache-Control':'no-cache'});res.end();return}
+ const gz=/\bgzip\b/.test(req.headers['accept-encoding']||'');
+ res.writeHead(200,Object.assign({'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-cache',ETag:ETAG,Vary:'Accept-Encoding'},gz?{'Content-Encoding':'gzip','Content-Length':PAGEZ.length}:{'Content-Length':PAGE.length}));res.end(gz?PAGEZ:PAGE)});
 const wss=new WebSocketServer({server,maxPayload:64*1024});
 
 const rooms=new Map();
